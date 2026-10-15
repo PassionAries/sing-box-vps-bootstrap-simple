@@ -36,9 +36,10 @@ sing-box 由 Homebrew 选择适合当前 macOS 的包，并负责下载校验，
 
 ## 2. 导入 VPS 配置
 
-下载 `connect-vps.sh`。使用你已经验证主机身份、能够直连 VPS 的 SSH/SFTP 连接，
-把 VPS 的 `/etc/sing-box/config.json` 私密下载为 Mac 的 `~/Downloads/vps-config.json`。
-这个文件含密钥，不要发到聊天、Git 或公开日志。
+下载 `connect-vps.sh`。先按 [最小私密交接](private-handoff.md) 在服务器生成 SS2022 字段投影，
+通过已核验 host key 的 SSH＋sudo 只取回该投影，保存为 Mac 的 `~/Downloads/vps-config.json`。
+不要下载整份服务端配置：双协议配置还包含客户端不需要的 REALITY 私钥。
+投影文件仍含 SS2022 密钥，不要发到聊天、Git 或公开日志。
 
 把下面的 `VPS_IP` 换成 VPS 的公网数字 IPv4 地址：
 

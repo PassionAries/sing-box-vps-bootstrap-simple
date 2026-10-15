@@ -43,6 +43,7 @@ X25519 协商、证书覆盖所填 server name 以及所需 ALPN；检查未认�
 本批保持 TCP 策略，Vision 不叠加 sing-box MUX。所有协议使用独立凭据；REALITY 私钥只留服务器，
 客户端仅需 UUID、公钥、short ID、server name 和 VPS 地址/端口。凭据不放 argv、环境变量或日志。
 首次生成的公私钥配对仅保存在本次 root-only 备份 `reality-keypair.private`，不要将它整份交给客户端。
+服务端 `config.json` 也含私钥，不能整份下载；SS2022 交接改用 [白名单投影](private-handoff.md)。
 
 客户端增加手动 `selector`，默认仍为 `ss2022`；可明确选择 `reality`。DNS、规则下载和既有代理路由
 继续指向 selector 的 `vps` 标签；不设置自动直连回退。Mac 保留 en4；手机保留平台 socket 保护，
@@ -56,7 +57,9 @@ UDP 支持或同一 VPS IP 被封时仍可用。服务商端口策略仍需独�
 维护入口与安装器共用 `/run/lock/sing-box-install.lock`。修改前保存原程序、配置和 unit 到
 `/var/backups/sing-box/maintain.*`，并写入 `/var/lib/sing-box-maintenance/pending`。
 正常失败或 TERM/INT/HUP 尝试恢复原程序/配置并验证 5 秒；恢复失败保留 pending，操作仍返回非零。
-SIGKILL、断电不能执行 trap；后续入口拒绝盲目重试。没有通用事务引擎、轮换或自动整机重启。
+SIGKILL、断电不能执行 trap；后续安装和维护入口都拒绝盲目重试。
+安装器另用 `/var/lib/sing-box/install-restart-required` 表示已发布文件待完成重启/验证；
+该标记存在时先核查失败原因、重跑安装器完成验证，不能绕过它直接升级。没有通用事务引擎、轮换或自动整机重启。
 
 中断后在 root 控制台核查 pending 指向的备份，执行备份 `SHA256SUMS` 检查，确认 unit 未外改。
 如需恢复，将备份 `sing-box` 和 `config.json` 分别复制到原目标目录的临时文件，设为 root:root 0755

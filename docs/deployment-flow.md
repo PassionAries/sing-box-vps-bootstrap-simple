@@ -104,8 +104,9 @@ journalctl --no-pager -u sing-box -n 50
 
 ## 3. 私密交接与最小链路验证
 
-通过已经核验主机身份的 SSH＋sudo，把 VPS 的 `/etc/sing-box/config.json` 私密下载到 Mac。
-加固后的普通管理员 SFTP 不能直接读取 root:sing-box 0640 的配置；通过 `sudo -n` 读取，
+先按 [最小私密交接](private-handoff.md) 在 VPS 生成 SS2022 字段白名单投影，再通过已核验
+主机身份的 SSH＋sudo 只取回该投影。不得下载整份服务端配置或 REALITY 公私钥记录。
+加固后的普通管理员 SFTP 不能直接读取 root-only 投影；通过 `sudo -n` 读取，
 输出只进入 Mac 的私密临时文件，传输和格式检查成功后再发布。失败时保留原客户端配置。
 不为传输放宽服务端文件权限。当前脚本不负责这条远程取回路径，拟议入口见 [下一阶段计划](next-steps.md)。
 Mac 文件应归当前用户所有、权限 0600；公网数字 IPv4 由操作者明确提供，不从本地 DNS 或出口检测猜测。

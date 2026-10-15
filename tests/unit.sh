@@ -70,6 +70,61 @@ else
     printf 'SKIP root-owned file checks (run with sudo in CI)\n'
 fi
 
+# 有效 unit 不能只靠磁盘文件里的归属注释；独立覆盖各拒绝条件。
+EFFECTIVE_FRAGMENT=$UNIT EFFECTIVE_DROPS='' EFFECTIVE_USER=sing-box EFFECTIVE_GROUP=sing-box
+systemctl() {
+    case "$4" in
+        FragmentPath) printf '%s\n' "$EFFECTIVE_FRAGMENT" ;;
+        DropInPaths) printf '%s\n' "$EFFECTIVE_DROPS" ;;
+        User) printf '%s\n' "$EFFECTIVE_USER" ;;
+        Group) printf '%s\n' "$EFFECTIVE_GROUP" ;;
+        *) return 1 ;;
+    esac
+}
+check_service_layout
+EFFECTIVE_DROPS=/etc/systemd/system/sing-box.service.d/override.conf
+reject check_service_layout
+EFFECTIVE_DROPS='' EFFECTIVE_USER=root
+reject check_service_layout
+EFFECTIVE_USER=sing-box EFFECTIVE_GROUP=root
+reject check_service_layout
+EFFECTIVE_GROUP=sing-box EFFECTIVE_FRAGMENT=/usr/lib/systemd/system/sing-box.service
+reject check_service_layout
+unset -f systemctl
+pass 'effective unit path, drop-ins, user and group validation'
+
+if (( EUID == 0 )); then
+    RESTART_REQUIRED="$TEMP/install-restart-required"
+    MAINTENANCE_PENDING="$TEMP/maintenance-pending"
+    CONFIG="$TEMP/published.json"
+    printf 'before\n' > "$CONFIG"
+    printf 'after\n' > "$TEMP/candidate"
+    BACKUP="$TEMP/backups"; mkdir "$BACKUP"
+    check_pending_operations
+    # 在真实发布函数的 rename 前中断：标记存在，旧文件仍在。
+    eval "$(declare -f mark_restart_required | sed '1s/mark_restart_required/real_mark_restart_required/')"
+    # 由生产 publish_file 间接调用此故障替身。
+    # shellcheck disable=SC2329
+    mark_restart_required() { real_mark_restart_required; exit 97; }
+    reject publish_file "$TEMP/candidate" "$CONFIG" 0600 root
+    [[ $(cat "$CONFIG") == before && -f $RESTART_REQUIRED ]]
+    unset -f mark_restart_required
+    eval "$(declare -f real_mark_restart_required | sed '1s/real_mark_restart_required/mark_restart_required/')"
+    publish_file "$TEMP/candidate" "$CONFIG" 0600 root
+    [[ $(cat "$CONFIG") == after && $(stat -c %a "$RESTART_REQUIRED") == 600 ]]
+    check_pending_operations
+    # 相同文件不能自行消耗待重启记录。
+    publish_file "$TEMP/candidate" "$CONFIG" 0600 root
+    [[ -f $RESTART_REQUIRED ]]
+    printf 'unknown\n' > "$RESTART_REQUIRED"
+    reject check_pending_operations
+    rm "$RESTART_REQUIRED"
+    printf 'unfinished maintenance\n' > "$MAINTENANCE_PENDING"
+    reject check_pending_operations
+    rm "$MAINTENANCE_PENDING"
+    pass 'durable marker precedes publication, survives retry and refuses unknown/pending state'
+fi
+
 # 直接执行真实 CLI，但只使用帮助和非法参数；这几条路径应在预检/安装前返回。
 "$ROOT/scripts/prepare-vps.sh" --help > "$TEMP/help"
 reject "$ROOT/scripts/prepare-vps.sh" --unknown

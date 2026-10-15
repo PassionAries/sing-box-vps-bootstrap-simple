@@ -162,11 +162,12 @@ preflight() {
     ! systemd-detect-virt --container --quiet || die 'Containers are unsupported.'
     local path command
     for command in jq curl openssl runuser timeout dpkg-deb ss; do command -v "$command" >/dev/null || die 'Install the existing installer dependencies first.'; done
-    for path in "$BIN" "$CONFIG" "$UNIT" "$STATE" "$STATE/pending" /var/backups/sing-box /run/lock/sing-box-install.lock; do safe_path "$path"; done
+    for path in "$BIN" "$CONFIG" "$UNIT" "$STATE" "$STATE/pending" /var/lib/sing-box/install-restart-required /var/backups/sing-box /run/lock/sing-box-install.lock; do safe_path "$path"; done
     [[ -f $BIN && -f $CONFIG && -f $UNIT ]] || die 'Existing installation required.'
     exec 9>/run/lock/sing-box-install.lock
     flock -n 9 || die 'Another installer/maintenance process is running.'
     [[ ! -e $STATE/pending ]] || die 'Interrupted maintenance: restore files from the recorded private backup before retrying; see docs/reality-upgrade.md.'
+    [[ ! -e /var/lib/sing-box/install-restart-required ]] || die 'Unfinished installation: inspect and finish prepare-vps.sh before maintenance.'
     [[ $(dpkg-query -W -f='${db:Status-Status}' sing-box 2>/dev/null || true) != installed ]] || die 'APT-managed installation is unsupported.'
     grep -Fxq -- "$MARKER" "$UNIT" || die 'Foreign systemd unit.'
     [[ $(systemctl show sing-box -p FragmentPath --value) == "$UNIT" &&
