@@ -104,7 +104,7 @@ if (( EUID == 0 )); then
     # 在真实发布函数的 rename 前中断：标记存在，旧文件仍在。
     eval "$(declare -f mark_restart_required | sed '1s/mark_restart_required/real_mark_restart_required/')"
     # 由生产 publish_file 间接调用此故障替身。
-    # shellcheck disable=SC2329
+    # shellcheck disable=SC2329,SC2317
     mark_restart_required() { real_mark_restart_required; exit 97; }
     reject publish_file "$TEMP/candidate" "$CONFIG" 0600 root
     [[ $(cat "$CONFIG") == before && -f $RESTART_REQUIRED ]]
