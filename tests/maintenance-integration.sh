@@ -57,6 +57,8 @@ pass 'repeated upgrade preserves healthy PID'
 # kill -9/断电无法触发 trap：pending 存在时所有维护都必须先停下。
 printf '%s\n' "$WORK/simulated-interrupted-backup" > /var/lib/sing-box-maintenance/pending
 reject bash "$MAINTAIN" upgrade
+reject bash "$ROOT/scripts/prepare-vps.sh"
+grep -Fq 'Interrupted maintenance' "$WORK/rejection.log"
 [[ $(systemctl show sing-box -p MainPID --value) == "$PID" ]]
 rm /var/lib/sing-box-maintenance/pending
 pass 'interrupted pending record blocks blind retry'

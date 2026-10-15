@@ -24,9 +24,9 @@ UNIT=/etc/systemd/system/sing-box.service
 SWAP=/var/lib/sing-box/swapfile
 MARKER='# Managed by prepare-vps.sh (simple-v1)'
 WORK='' BACKUP='' STEP=preflight
-# publish_file 写入不同内容时置 1；用于决定是否重启已运行的 sing-box。
-# 该标志是本次执行的内存状态，不会跨执行保存。
-SERVICE_CHANGED=0
+# 一个持久标记覆盖配置/unit/程序的发布到健康验证之间的窗口，不是事务数据库。
+RESTART_REQUIRED=/var/lib/sing-box/install-restart-required
+MAINTENANCE_PENDING=/var/lib/sing-box-maintenance/pending
 
 # 普通输出不含密钥。die 报告当前阶段后退出；不尝试撤销前面的系统修改。
 say() { printf '%s\n' "$*"; }
@@ -109,8 +109,38 @@ backup_file() {
     chmod 0600 "$BACKUP/${1//\//_}"
 }
 
+# 维护中断不能通过改用安装入口绕过；标记内容/权限未知时也停止。
+check_pending_operations() {
+    safe_path "$MAINTENANCE_PENDING"
+    [[ ! -e $MAINTENANCE_PENDING ]] || die 'Interrupted maintenance: recover the recorded backup before installing.'
+    safe_path "$RESTART_REQUIRED"
+    if [[ -e $RESTART_REQUIRED ]]; then
+        [[ -f $RESTART_REQUIRED && $(stat -c %a "$RESTART_REQUIRED") == 600 ]] || die 'Unknown installer restart marker.'
+        cmp -s "$RESTART_REQUIRED" <(printf '%s\n' "$MARKER") || die 'Unknown installer restart marker.'
+    fi
+}
+
+# 在第一个服务文件 rename 前刷盘；即使文件已经相同，重试也会完成所欠的重启。
+mark_restart_required() {
+    if [[ ! -e $RESTART_REQUIRED ]]; then
+        (set -o noclobber; printf '%s\n' "$MARKER" > "$RESTART_REQUIRED")
+        chmod 0600 "$RESTART_REQUIRED"
+        sync -f "$RESTART_REQUIRED"
+        sync -f "${RESTART_REQUIRED%/*}"
+    fi
+}
+
+# 主文件中的标记不代表有效配置：拒绝其他加载路径、drop-in 和 root 身份覆盖。
+check_service_layout() {
+    [[ $(systemctl show sing-box.service -p FragmentPath --value) == "$UNIT" &&
+       -z $(systemctl show sing-box.service -p DropInPaths --value) &&
+       $(systemctl show sing-box.service -p User --value) == sing-box &&
+       $(systemctl show sing-box.service -p Group --value) == sing-box ]] ||
+        die 'Unexpected effective service layout; inspect unit/drop-ins before retrying.'
+}
+
 # 参数：已准备好的源文件、绝对目标路径、目标权限、目标组。
-# 内容相同只收敛 owner/mode，不置 SERVICE_CHANGED，避免健康服务无故重启。
+# 内容相同只收敛 owner/mode；只有服务文件变化才留下待重启标记。
 # 内容不同时先备份，再在目标目录创建候选；同目录 rename 原子切换单个文件。
 # sync -f 先同步候选内容、再同步目标目录；多个文件之间仍不是一个原子事务。
 publish_file() {
@@ -125,9 +155,9 @@ publish_file() {
     candidate=$(mktemp "${destination}.new.XXXXXXXX")
     install -m "$mode" -o root -g "$group" -- "$source" "$candidate"
     sync -f "$candidate"
+    case "$destination" in "$BIN"|"$CONFIG"|"$UNIT") mark_restart_required ;; esac
     mv -fT -- "$candidate" "$destination"
     sync -f "${destination%/*}"
-    SERVICE_CHANGED=1
 }
 
 # 用 jq 从私有文件读取密钥，不把密钥正文放到 jq 参数或环境变量中。
@@ -174,6 +204,7 @@ preflight() {
     safe_path /run/lock/sing-box-install.lock
     exec 9>/run/lock/sing-box-install.lock
     flock -n 9 || die 'Another installer is running.'
+    check_pending_operations
     for path in "$BIN" "$CONFIG" "$UNIT" /var/lib/sing-box /etc/fstab \
         /etc/systemd/journald.conf.d/60-sing-box-limits.conf; do safe_path "$path"; done
     local journal=/etc/systemd/journald.conf.d/60-sing-box-limits.conf
@@ -187,6 +218,7 @@ preflight() {
         die 'An APT sing-box installation already exists; inspect it before migrating.'
     if [[ -e $UNIT ]]; then
         grep -Fxq -- "$MARKER" "$UNIT" || die 'Existing service is not managed by this script.'
+        check_service_layout
     else
         [[ ! -e $CONFIG ]] || die 'Existing sing-box configuration is not managed by this script.'
         [[ $(systemctl show sing-box.service -p LoadState --value) == not-found ]] || die 'Another sing-box unit exists.'
@@ -340,10 +372,11 @@ EOF
         systemctl restart systemd-journald.service
     fi
     systemctl daemon-reload
+    check_service_layout
     systemctl enable sing-box.service >/dev/null
     # 内容不变且服务健康时保留原 PID；未运行则清除启动限流失败状态后启动。
     if systemctl is-active --quiet sing-box.service; then
-        if (( SERVICE_CHANGED )); then systemctl restart sing-box.service; fi
+        if [[ -f $RESTART_REQUIRED ]]; then systemctl restart sing-box.service; fi
     else
         systemctl reset-failed sing-box.service
         systemctl start sing-box.service
@@ -354,7 +387,8 @@ EOF
 # 随后确认实际二进制、TCP 443 归属和没有该进程的 UDP 443 监听。
 # 此函数只验证 VPS 本机服务；公网放行、密钥认证和 HTTPS 需要独立客户端实测。
 verify_service() {
-    local pid listeners _
+    check_service_layout
+    local pid listeners uid gid _
     pid=$(systemctl show sing-box.service -p MainPID --value)
     [[ $pid =~ ^[1-9][0-9]*$ ]] || die 'Service has no running main process.'
     for _ in 1 2 3 4 5; do
@@ -363,6 +397,9 @@ verify_service() {
         [[ $(systemctl show sing-box.service -p MainPID --value) == "$pid" ]] || die 'Service restarted during verification.'
     done
     [[ $(readlink -f "/proc/$pid/exe") == "$BIN" ]] || die 'Unexpected service executable.'
+    read -r uid gid < <(ps -o uid=,gid= -p "$pid")
+    [[ $uid == "$(id -u sing-box)" && $gid == "$(id -g sing-box)" ]] || die 'Unexpected running service identity.'
+
     listeners=$(ss -H -ltnp 'sport = :443')
     [[ -n $listeners ]] || die 'TCP 443 is not listening.'
     while IFS= read -r line; do
@@ -370,6 +407,11 @@ verify_service() {
     done <<< "$listeners"
     listeners=$(ss -H -lunp 'sport = :443')
     [[ $listeners != *"pid=$pid,"* ]] || die 'The service unexpectedly opened UDP 443.'
+    # 验证失败或进程被强制终止都保留标记；只有完整本机验证后才能清除。
+    if [[ -f $RESTART_REQUIRED ]]; then
+        rm -- "$RESTART_REQUIRED"
+        sync -f "${RESTART_REQUIRED%/*}"
+    fi
     say "Installed: sing-box $VERSION, SS2022, IPv4 TCP 443. Local service check passed."
     say "Private configuration: $CONFIG (key not printed)."
     say 'Status: systemctl --no-pager status sing-box; logs: journalctl --no-pager -u sing-box -n 50'

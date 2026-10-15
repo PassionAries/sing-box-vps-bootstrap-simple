@@ -79,6 +79,77 @@ cmp "$UNIT" "$WORK/good.service"
 systemctl is-active --quiet sing-box
 pass 'overrestricted network families fail startup; rerun repairs service without changing the key'
 
+# 真实 drop-in 覆盖运行身份：主 unit 标记不变，安装器必须在 APT 前拒绝。
+mkdir -p /etc/systemd/system/sing-box.service.d
+printf '[Service]\nUser=root\nGroup=root\n' > /etc/systemd/system/sing-box.service.d/fixture-root.conf
+systemctl daemon-reload
+systemctl restart sing-box
+PID=$(systemctl show sing-box -p MainPID --value)
+[[ $(ps -o uid= -p "$PID" | tr -d ' ') == 0 ]]
+if bash "$INSTALLER" > "$WORK/root-dropin.log" 2>&1; then exit 1; fi
+grep -Fq 'ERROR [preflight]: Unexpected effective service layout' "$WORK/root-dropin.log"
+[[ $(systemctl show sing-box -p MainPID --value) == "$PID" ]]
+[[ $(sha256sum /etc/sing-box/config.json) == "$KEY_CONFIG_BEFORE" ]]
+rm /etc/systemd/system/sing-box.service.d/fixture-root.conf
+rmdir /etc/systemd/system/sing-box.service.d
+systemctl daemon-reload
+systemctl restart sing-box
+pass 'real root drop-in is refused in preflight without changing config or process'
+
+# 维护已中断时，换安装入口不能绕过恢复要求。
+install -d -m 0700 /var/lib/sing-box-maintenance
+printf 'synthetic unfinished maintenance\n' > /var/lib/sing-box-maintenance/pending
+PID=$(systemctl show sing-box -p MainPID --value)
+if bash "$INSTALLER" > "$WORK/pending.log" 2>&1; then exit 1; fi
+grep -Fq 'ERROR [preflight]: Interrupted maintenance' "$WORK/pending.log"
+[[ $(systemctl show sing-box -p MainPID --value) == "$PID" ]]
+[[ $(sha256sum /etc/sing-box/config.json) == "$KEY_CONFIG_BEFORE" ]]
+rm /var/lib/sing-box-maintenance/pending
+pass 'installer refuses outstanding maintenance before persistent installation changes'
+
+# 原进程先实际加载不同但有效的日志配置。生产副本只注入一次 SIGKILL，无法运行 trap。
+cp /etc/sing-box/config.json "$WORK/good.json"
+jq '.log.level="error"' "$WORK/good.json" > "$WORK/old-runtime.json"
+install -o root -g sing-box -m 0640 "$WORK/old-runtime.json" /etc/sing-box/config.json
+systemctl restart sing-box
+PID=$(systemctl show sing-box -p MainPID --value)
+python3 - "$INSTALLER" "$WORK/interrupted-install.sh" <<'PATCH'
+from pathlib import Path
+import sys
+s = Path(sys.argv[1]).read_text()
+needle = '    publish_file "$WORK/config.json" "$CONFIG" 0640 sing-box\n'
+assert s.count(needle) == 1
+Path(sys.argv[2]).write_text(s.replace(needle, needle + '    kill -KILL "$$"\n', 1))
+PATCH
+if bash "$WORK/interrupted-install.sh" > "$WORK/interrupted-install.log" 2>&1; then exit 1; fi
+cmp "$WORK/good.json" /etc/sing-box/config.json
+[[ $(systemctl show sing-box -p MainPID --value) == "$PID" ]]
+[[ $(stat -c '%U:%a' /var/lib/sing-box/install-restart-required) == root:600 ]]
+if bash "$ROOT/scripts/maintain-vps.sh" upgrade > "$WORK/unfinished-install.log" 2>&1; then exit 1; fi
+grep -Fq 'Unfinished installation' "$WORK/unfinished-install.log"
+bash "$INSTALLER" > "$WORK/retry-install.log" 2>&1 || { cat "$WORK/retry-install.log"; exit 1; }
+[[ $(systemctl show sing-box -p MainPID --value) != "$PID" ]]
+[[ ! -e /var/lib/sing-box/install-restart-required ]]
+cmp "$WORK/good.json" /etc/sing-box/config.json
+[[ $(systemctl show sing-box -p User --value) == sing-box ]]
+pass 'SIGKILL after config publication retains marker; retry restarts and verifies before clearing it'
+
+# 即使重启成功，验证失败也不能提前清除记录；随后重试仍需验证后清除。
+python3 - "$INSTALLER" "$WORK/failed-verification.sh" <<'PATCH'
+from pathlib import Path
+import sys
+s = Path(sys.argv[1]).read_text()
+needle = 'verify_service() {\n'
+assert s.count(needle) == 1
+Path(sys.argv[2]).write_text(s.replace(needle, needle + '    return 1\n', 1))
+PATCH
+install -o root -g sing-box -m 0640 "$WORK/old-runtime.json" /etc/sing-box/config.json
+if bash "$WORK/failed-verification.sh" > "$WORK/failed-verification.log" 2>&1; then exit 1; fi
+[[ -f /var/lib/sing-box/install-restart-required ]]
+bash "$INSTALLER" > "$WORK/retry-verification.log" 2>&1 || { cat "$WORK/retry-verification.log"; exit 1; }
+[[ ! -e /var/lib/sing-box/install-restart-required ]]
+pass 'failed verification retains restart marker until a fully verified retry'
+
 # 健康重跑必须保留 PID、配置/密钥、fstab 和 swap 的文件身份；APT 刷新仍允许发生。
 PID=$(systemctl show sing-box -p MainPID --value)
 CONFIG_BEFORE=$(sha256sum /etc/sing-box/config.json)

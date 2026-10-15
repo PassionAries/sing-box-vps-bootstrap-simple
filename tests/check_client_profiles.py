@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import platform
+import re
 import subprocess
 import tempfile
 
@@ -14,14 +15,24 @@ ROOT = Path(__file__).resolve().parents[1]
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--binary', required=True)
+    parser.add_argument('--mode', choices=('reviewed', 'compatibility'), default='reviewed')
+    parser.add_argument('--output', type=Path)
     args = parser.parse_args()
     binary = Path(args.binary).resolve(strict=True)
-    output = ROOT / 'artifacts/client-profiles'
+    output = args.output or ROOT / 'artifacts/client-profiles' / args.mode
     output.mkdir(parents=True, exist_ok=True)
     version = subprocess.run([str(binary), 'version'], capture_output=True, text=True, timeout=30)
     first_line = version.stdout.splitlines()[0] if version.stdout else ''
     expected = json.loads((ROOT / 'examples/1.14.2/client-versions.json').read_text())['core']['version']
-    assert version.returncode == 0 and first_line == 'sing-box version ' + expected, 'Wrong core version for reviewed templates'
+    match = re.fullmatch(r'sing-box version (\d+\.\d+\.\d+)', first_line)
+    assert version.returncode == 0 and match, 'Expected a stable core version'
+    actual = match.group(1)
+    if args.mode == 'reviewed':
+        assert actual == expected, 'Wrong core version for reviewed templates'
+    else:
+        # CI obtains the current stable build from Homebrew; only the version gate is
+        # relaxed here. All four real configuration checks remain mandatory.
+        assert tuple(map(int, actual.split('.'))) >= tuple(map(int, expected.split('.'))), 'Core is older than the reviewed baseline'
     records = []
     files = ['examples/1.14.2/client-versions.json', 'tests/check_client_profiles.py', 'tests/client_profiles_test.py']
     with tempfile.TemporaryDirectory(prefix='client-profile-check-') as directory:
@@ -35,7 +46,8 @@ def main():
             records.append({'profile': name, 'command': command, 'exit_code': result.returncode})
             # Only the explicit public fixture allowlist is passed to the binary.
             (output / (name + '.log')).write_text(result.stdout + result.stderr)
-    summary = {'result': 'PASS' if all(r['exit_code'] == 0 for r in records) else 'FAIL',
+    summary = {'mode': args.mode, 'reviewed_core': expected, 'tested_core': actual,
+               'result': 'PASS' if all(r['exit_code'] == 0 for r in records) else 'FAIL',
                'environment': {'system': platform.system(), 'release': platform.release(),
                                'machine': platform.machine(), 'python': platform.python_version()},
                'version_output': version.stdout, 'commands': records,

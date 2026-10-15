@@ -21,6 +21,8 @@ jobs:
       - run: python3 -B tests/client_profiles_test.py
       - run: python3 -B tests/reality_profiles_test.py
       - run: bash tests/maintenance-unit.sh
+      - run: python3 -B tests/profile_check_test.py
+      - run: bash tests/handoff-unit.sh
   mac-client:
     runs-on: macos-26
     timeout-minutes: 10
@@ -28,11 +30,34 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
+      - name: Obtain the reviewed core only for CI configuration checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          record=examples/1.14.2/client-versions.json
+          version=$(jq -er '.core.version' "$record")
+          name="sing-box-${version}-darwin-arm64.tar.gz"
+          stage=$(mktemp -d "$RUNNER_TEMP/reviewed-core.XXXXXXXX")
+          size=$(jq -er --arg n "$name" '.artifacts[$n].archive_size' "$record")
+          digest=$(jq -er --arg n "$name" '.artifacts[$n].archive_sha256' "$record")
+          curl --fail --silent --show-error --location --max-redirs 3 --proto '=https' --proto-redir '=https' \
+            --connect-timeout 15 --max-time 180 --max-filesize "$size" \
+            "https://github.com/SagerNet/sing-box/releases/download/v${version}/${name}" -o "$stage/core.tar.gz"
+          test "$(stat -f %z "$stage/core.tar.gz")" = "$size"
+          printf '%s  %s\n' "$digest" "$stage/core.tar.gz" | shasum -a 256 -c -
+          tar -xzf "$stage/core.tar.gz" -C "$stage" "sing-box-${version}-darwin-arm64/sing-box"
+          core="$stage/sing-box-${version}-darwin-arm64/sing-box"
+          test -f "$core" && test ! -L "$core"
+          test "$(stat -f %z "$core")" = "$(jq -er --arg n "$name" '.artifacts[$n].binary_size' "$record")"
+          printf '%s  %s\n' "$(jq -er --arg n "$name" '.artifacts[$n].binary_sha256' "$record")" "$core" | shasum -a 256 -c -
+          printf 'REVIEWED_CORE=%s\n' "$core" >> "$GITHUB_ENV"
+      - name: Check the exact reviewed core without starting TUN
+        run: python3 -B tests/check_client_profiles.py --binary "$REVIEWED_CORE" --mode reviewed
       - run: brew update && brew install --formula bash curl jq openssl sing-box && brew upgrade --formula --no-ask bash curl jq openssl sing-box
       - run: /opt/homebrew/bin/bash -n scripts/connect-vps.sh
       - run: /opt/homebrew/bin/bash tests/client-unit.sh
-      - name: Check redacted configuration examples without starting TUN
-        run: python3 -B tests/check_client_profiles.py --binary /opt/homebrew/bin/sing-box
+      - name: Check current Homebrew stable compatibility without starting TUN
+        run: python3 -B tests/check_client_profiles.py --binary /opt/homebrew/bin/sing-box --mode compatibility
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:

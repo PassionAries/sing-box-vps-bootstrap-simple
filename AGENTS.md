@@ -34,7 +34,9 @@ The previous controller, schemas and ADRs are historical at commit
 - On 2026-09-26 the user selected VLESS + REALITY + Vision and a stable-version upgrade.
   Ship a standalone maintain-vps.sh with separate upgrade (reviewed 1.14.0 -> 1.14.2)
   and reality calls, fixed experimental TCP 8443 and original SS2022 credentials retained.
-  Use ordinary private backups and a pending marker; refuse blind retries after interruption.
+  Use ordinary private backups and a pending marker; both installer and maintenance
+  refuse outstanding maintenance. Installer service publications retain one durable
+  restart-required marker until restart and full local verification succeed.
   harden-vps.sh allow-reality alone adds TCP 8443 to an unchanged managed firewall.
   New clients offer manual SS2022/REALITY selection, default SS2022; retain existing
   TCP/DNS/routing/interface-protection policy. No automatic direct fallback or Vision MUX.
@@ -80,6 +82,10 @@ steps and untested paths distinct when updating documentation.
   installation, versions and checksums belong to Homebrew's stable formulas.
   No curl-pipe-shell installer or silent fallback to older client dependencies.
 - Check configuration before replacing it atomically; keep a private previous-file backup.
+- CI checks the exact reviewed core separately from current Homebrew stable compatibility;
+  the pinned CI-only binary never replaces the Homebrew client or a deployed service.
+- Client handoff projects an explicit field allowlist on the server; never download a
+  complete REALITY server configuration or its private/public keypair record.
 - Reruns preserve the key, avoid duplicate swap entries and leave an unchanged healthy
   service running. APT refresh is allowed on each invocation.
 - Run Bash syntax, ShellCheck and focused tests. Run actual installation in a disposable
