@@ -36,8 +36,49 @@ git diff --check
 
 ## CI / VM
 
-本次候选 CI 尚未运行。VM 回归和当前 Homebrew 原生检查：**NOT RUN**，将在推送后追加实际结果。
-已有历史 VM 结果不冒充本次修复的运行证据。
+实现提交 `2e006954e46adf6027363043b4eeb0b7a408253f` 的
+[CI 38782314737](https://github.com/snkio027/sing-box-vps-bootstrap-simple/actions/runs/38782314737)
+六项任务全部成功。已下载五个制品目录中的六份报告，核对 **28 条源码摘要** 与本批文件一致。
+[脱敏汇总](evidence/review-fixes-20261016.json) 只记录环境、断言数量、退出码和源码摘要。
+后续报告提交只修改证据文档，不改变这些已测源文件；最终提交的检查状态另见 PR。
+
+| 场景 | 结果 |
+| --- | --- |
+| Ubuntu 静态、root 函数与策略检查 | 58 项/组通过；语法、ShellCheck 均成功 |
+| Mac CI，精确 1.14.2 | 官方归档与内部程序大小/SHA-256 均匹配；四份原生配置检查 exit 0 |
+| Mac CI，Homebrew 稳定版 1.14.3 | 完整最小客户端组件测试通过；同四份配置 check 均 exit 0 |
+| Ubuntu 24.04 amd64 KVM，1 GiB / 20 GiB 安装与协议维护 | 22 项断言，exit 0 |
+| 相同规格，SSH socket 模式加固 | 20 项断言，exit 0 |
+| 相同规格，SSH service 模式加固 | 19 项断言，exit 0 |
+| 相同规格，初始未安装 UFW | 16 项断言，exit 0 |
+
+合计 **77 项 VM 断言**。安装 VM 实际以 root drop-in 启动服务，再验证预检拒绝；
+在配置发布后发送 SIGKILL，确认旧 PID 存活、磁盘配置已替换、待重启标记为 root:600，
+维护入口拒绝插入，重试安装后 PID 改变且标记清除。另覆盖验证失败不清标记、随后重试和健康幂等执行。
+原有 SS2022 / REALITY 的真实合成 HTTPS、错误凭据拒绝及维护文件恢复也继续通过。
+
+Linux / 一次性 VM 的复现命令：
+
+```sh
+sudo bash tests/unit.sh
+bash tests/client-unit.sh
+bash tests/hardening-unit.sh
+bash tests/maintenance-unit.sh
+bash tests/handoff-unit.sh
+python3 -B tests/profile_check_test.py
+python3 -B tests/client_profiles_test.py
+python3 -B tests/reality_profiles_test.py
+sudo python3 -B tests/run_vm.py
+sudo python3 -B tests/run_hardening_vm.py --ssh-mode socket --scenario standard
+sudo python3 -B tests/run_hardening_vm.py --ssh-mode service --scenario standard
+sudo python3 -B tests/run_hardening_vm.py --ssh-mode socket --scenario without-ufw
+```
+
+Mac CI 另执行 `check_client_profiles.py --mode compatibility --binary /opt/homebrew/bin/sing-box`；
+reviewed 与 compatibility 分别保存结果，不能用较新版本通过替代固定版本证据。
+
+首轮 `3e23d44` 的 CI 因 ShellCheck 将动态调用的测试替身标为不可达而失败，VM 未运行。
+仅在该替身处补充带说明的 SC2317 豁免后重新执行全部检查；没有放宽生产检查或把首轮算为 PASS。
 
 ## 未覆盖范围
 
